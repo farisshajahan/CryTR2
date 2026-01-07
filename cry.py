@@ -24,8 +24,8 @@ ACCOUNT_CLOSING_BALANCE_INR = 0
 TOTAL_CY_CAPITAL_GAINS = 0
 LAST_CY_TXN_LIST = []
 CURRENT_CY_TXN_LIST = []
-OPEN_LOTS_FILE = None
-CLOSED_LOTS_FILE = None
+OPEN_LOTS_LIST = []
+CLOSED_LOTS_LIST = []
 
 CURRENT_TAX_YEAR = None
 ACCOUNT_STARTING_CASH_RESERVE_BALANCE_USD = 0
@@ -37,7 +37,7 @@ TT_BUY_MAP = dict()
 
 def init(args):
     csv_files = [join(args.files_dir, f) for f in listdir(args.files_dir) if isfile(join(args.files_dir, f)) and f[-4:] == ".csv"]
-    global ACCOUNT_STARTING_CASH_RESERVE_BALANCE_USD, PARTICIPANT_NUMBER, ACCOUNT_OPENING_DATE, OPEN_LOTS_FILE, CLOSED_LOTS_FILE, LAST_CY_TXN_LIST, CURRENT_CY_TXN_LIST
+    global ACCOUNT_STARTING_CASH_RESERVE_BALANCE_USD, PARTICIPANT_NUMBER, ACCOUNT_OPENING_DATE, LAST_CY_TXN_LIST, CURRENT_CY_TXN_LIST
     ACCOUNT_STARTING_CASH_RESERVE_BALANCE_USD = args.opening_cash_balance
     PARTICIPANT_NUMBER = args.participant_account_number
     ACCOUNT_OPENING_DATE = args.account_open_date
@@ -46,15 +46,36 @@ def init(args):
     file = open(CLOSED_LOTS_FILE, "r")
     lines = file.read().splitlines()
     file.close()
+    conf = "n"
     for line in lines:
         fields = line.split(",")
         try:
             datetime.strptime(fields[0], "%b/%d/%Y")
             if len(fields) < 8 or fields[7] not in ["SP", "RS"]:
-                print("RS/SP not specified as last column in closed lots CSV. Exiting.")
-                sys.exit(-1)
+                print("RS/SP not specified as last column in closed lots CSV. ", end='')
+                while True:
+                    print(f"Do you want to default all sold stock entries to RSU (Y/N)?: ", end="")
+                    conf = str(input()).lower()
+                    if conf in ["y", "n"]:
+                        break
+                    else: print("Invalid input passed.")
+                if conf == "n":
+                    print("Exiting...")
+                    sys.exit(-1)   
+                break 
         except ValueError:
             continue
+    for line in lines:
+        fields = line.split(",")
+        if conf == "y":
+            fields.append("RS")
+        CLOSED_LOTS_LIST.append(fields)
+    file = open(OPEN_LOTS_FILE, "r")
+    lines = file.read().splitlines()
+    file.close()
+    for line in lines:
+        fields = line.split(",")
+        OPEN_LOTS_LIST.append(fields)
     for f in csv_files:
         if f not in [OPEN_LOTS_FILE, CLOSED_LOTS_FILE]:
             file = open(f, "r")
@@ -106,10 +127,15 @@ def fetch_last_month_tt_buy(date):
     return fetch_last_available_tt_buy(datetime(year, last_month, max_days))
 
 def fetch_last_available_tt_buy(date):
+    num_days_behind = 0
     while True:
+        if num_days_behind > 7:
+            print(f"No TT buy rate found even 7 days behind {date + timedelta(days=7)}")
+            sys.exit(-1)
         if date in TT_BUY_MAP:
             return TT_BUY_MAP[date]
         date = date - timedelta(days=1)
+        num_days_behind += 1
 
 def parse_transaction_summary_dividends(summary_list1, summary_list2, output_dir):
     lines = summary_list1 + summary_list2
@@ -165,13 +191,7 @@ def parse_transaction_summary_dividends(summary_list1, summary_list2, output_dir
     outfile.write("\nTax paid in US in INR: " + str(round(dividends_with_tax*0.25)))
     outfile.close()
 
-def parse_shares(open_lots_filename, closed_lots_filename, output_dir):
-    file = open(open_lots_filename, "r")
-    open_lines = file.read().splitlines()
-    file.close()
-    file = open(closed_lots_filename, "r")
-    closed_lines = file.read().splitlines()
-    file.close()
+def parse_shares(open_lots_list, closed_lots_list, output_dir):
 
     # TODO: Determine long term or short term
     capital_gains_or_loss_split = [[0,0], [0,0], [0,0], [0,0], [0,0]]
@@ -180,8 +200,7 @@ def parse_shares(open_lots_filename, closed_lots_filename, output_dir):
     short_term_assets_acquire_value = 0
     short_term_assets_proceeds = 0
 
-    for line in closed_lines:
-        fields = line.split(",")
+    for fields in closed_lots_list:
         try:
             date_acquired = datetime.strptime(fields[0], "%b/%d/%Y")
             date_sold = datetime.strptime(fields[2], "%b/%d/%Y")
@@ -243,8 +262,7 @@ def parse_shares(open_lots_filename, closed_lots_filename, output_dir):
     outfile.write(f"\nLong term capital gains split for FY:\n01 Apr - 15 Jun: {round(capital_gains_or_loss_split[0][1])}\n16 Jun - 15 Sep: {round(capital_gains_or_loss_split[1][1])}\n16 Sep - 15 Dec: {round(capital_gains_or_loss_split[2][1])}\n16 Dec - 15 Mar: {round(capital_gains_or_loss_split[3][1])}\n16 Mar - 31 Mar: {round(capital_gains_or_loss_split[4][1])}")
     outfile.close()
 
-    for line in open_lines:
-        fields = line.split(",")
+    for fields in open_lots_list:
         try:
             date_acquired = datetime.strptime(fields[0], "%b-%d-%Y")
             peak_start_date = date_acquired
@@ -403,7 +421,7 @@ if __name__ == "__main__":
     init(args)
     init_tt_buy()
     parse_transaction_summary_dividends(LAST_CY_TXN_LIST, CURRENT_CY_TXN_LIST, args.output_dir)
-    parse_shares(OPEN_LOTS_FILE, CLOSED_LOTS_FILE, args.output_dir)
+    parse_shares(OPEN_LOTS_LIST, CLOSED_LOTS_LIST, args.output_dir)
     populate_dividends_for_a3()
     generate_a3_csv(args.output_dir)
     account_peak_balance(ACCOUNT_STARTING_CASH_RESERVE_BALANCE_USD, LAST_CY_TXN_LIST)
